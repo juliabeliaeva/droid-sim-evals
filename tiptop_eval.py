@@ -90,6 +90,7 @@ def main(
     video_dir = Path("runs") / datetime.now().strftime("%Y-%m-%d") / datetime.now().strftime("%H-%M-%S")
     video_dir.mkdir(parents=True, exist_ok=True)
     video = []
+    summary = []
     max_steps = env.env.max_episode_length
     video_fps = 15
 
@@ -137,30 +138,20 @@ def main(
                 client.reset()
                 metadata["success"] = not plan_failed
                 if not plan_failed:
-                    video_file = video_dir / f"tiptop_scene_{scene}_{i_idx}_ep{ep}.mp4"
+                    video_file = video_dir / f"tiptop_scene_{scene}_p{i_idx}_ep{ep}.mp4"
                     mediapy.write_video(video_file, video, fps=video_fps)
                     metadata["video_file"] = str(video_file)
                     logger.info(f"Saved video to {video_file}")
 
-                (video_dir / f"metadata_{scene}_{i_idx}_ep{ep}.json").write_text(json.dumps(metadata, indent=2) + "\n")
+                (video_dir / f"metadata_{scene}_p{i_idx}_ep{ep}.json").write_text(json.dumps(metadata, indent=2) + "\n")
+                summary.append(metadata)
                 video = []
 
+    (video_dir / f"summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
     client.close()
     env.close()
     simulation_app.close()
-
-    video_lines = [
-        f"  Instruction : {instruction}",
-        f"  Scene       : {scene}",
-        f"  Episodes    : {episodes}",
-        f"  Output dir  : {video_dir.resolve()}",
-    ]
-    for ep in range(episodes):
-        video_path = video_dir / f"tiptop_scene{scene}_ep{ep}.mp4"
-        if video_path.exists():
-            video_lines.append(f"  Video ep{ep}   : {video_path.resolve()}")
-    logger.info("Run complete\n" + "\n".join(video_lines))
 
 
 if __name__ == "__main__":
