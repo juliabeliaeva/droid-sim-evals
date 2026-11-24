@@ -11,6 +11,7 @@ Usage:
     # Then run this evaluation:
     uv run python tiptop_eval.py --scene 1 --ws-host localhost --ws-port 8765
 """
+import json
 
 import argparse
 import logging
@@ -30,11 +31,11 @@ from tqdm import tqdm
 
 from src.sim_evals.inference.tiptop_websocket import TiptopWebsocketClient
 from src.sim_evals.sim_utils import settle_sim
-from src.visual_utils import add_top_padding, overlay_timer_ms
+from src.visual_utils import add_top_padding, overlay_timer_ms, overlay_prompt
 
 
 def main(
-    instruction: str,
+    instructions: list[str],
     episodes: int = 1,
     headless: bool = True,
     scene: int = 1,
@@ -53,7 +54,7 @@ def main(
         variant: Scene variant (0-9)
         ws_host: Tiptop websocket server host
         ws_port: Tiptop websocket server port
-        instruction: Natural language task instruction.
+        instructions: A list of natural language task instructions.
     """
     from isaaclab.app import AppLauncher
 
@@ -93,53 +94,57 @@ def main(
     video_fps = 15
 
     with torch.no_grad():
-        for ep in range(episodes):
-            obs, _ = env.reset()
-            frame_idx = 0
-            obs = settle_sim(env, obs, reset_episode_buf=True)
-            plan_failed = False
-            for i in tqdm(range(max_steps), desc=f"Episode {ep+1}/{episodes}"):
-                try:
-                    ret = client.infer(obs, instruction)
-                except Exception as e:
-                    logger.error(f"Planning failed for episode {ep+1}: {e}. Skipping.")
-                    plan_failed = True
-                    break
-
-                if client.plan_done:
-                    logger.info(f"Plan fully executed at step {frame_idx}")
-                    break
-
-                viz = np.concatenate([ret["right_image"], ret["wrist_image"]], axis=1)
-                viz = add_top_padding(viz, pad_px=40)
-                elapsed_ms = int(frame_idx * 1000 / video_fps)
-                overlay_timer_ms(viz, elapsed_ms)
-                if not headless:
+        for i_idx, instruction in enumerate(instructions):
+            for ep in range(episodes):
+                obs, _ = env.reset()
+                frame_idx = 0
+                obs = settle_sim(env, obs, reset_episode_buf=True)
+                plan_failed = False
+                metadata = dict(episode=ep, prompt=instruction)
+                for i in tqdm(range(max_steps), desc=f"Episode {ep+1}/{episodes}"):
                     try:
-                        cv2.imshow("Camera View", cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
-                        cv2.waitKey(1)
-                    except cv2.error:
-                        pass
+                        ret = client.infer(obs, instruction)
+                    except Exception as e:
+                        metadata["error"] = str(e)
+                        logger.error(f"Planning failed for episode {ep+1}: {e}. Skipping.")
+                        plan_failed = True
+                        break
 
-                video.append(viz)
-                frame_idx += 1
+                    if client.plan_done:
+                        logger.info(f"Plan fully executed at step {frame_idx}")
+                        break
 
-                action = torch.tensor(ret["action"])[None]
-                obs, _, term, trunc, _ = env.step(action)
-                if term or trunc:
-                    break
+                    viz = np.concatenate([ret["right_image"], ret["wrist_image"]], axis=1)
+                    viz = add_top_padding(viz, pad_px=40)
+                    elapsed_ms = int(frame_idx * 1000 / video_fps)
+                    overlay_timer_ms(viz, elapsed_ms)
+                    overlay_prompt(viz, instruction)
+                    if not headless:
+                        try:
+                            cv2.imshow("Camera View", cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
+                            cv2.waitKey(1)
+                        except cv2.error:
+                            pass
 
-            client.reset()
-            if plan_failed:
+                    video.append(viz)
+                    frame_idx += 1
+
+                    action = torch.tensor(ret["action"])[None]
+                    obs, _, term, trunc, _ = env.step(action)
+                    if term or trunc:
+                        break
+
+                client.reset()
+                metadata["success"] = not plan_failed
+                if not plan_failed:
+                    video_file = video_dir / f"tiptop_scene_{scene}_{i_idx}_ep{ep}.mp4"
+                    mediapy.write_video(video_file, video, fps=video_fps)
+                    metadata["video_file"] = str(video_file)
+                    logger.info(f"Saved video to {video_file}")
+
+                (video_dir / f"metadata_{scene}_{i_idx}_ep{ep}.json").write_text(json.dumps(metadata, indent=2) + "\n")
                 video = []
-                continue
-            mediapy.write_video(
-                video_dir / f"tiptop_scene{scene}_ep{ep}.mp4",
-                video,
-                fps=video_fps,
-            )
-            video = []
-            logger.info(f"Saved video to {video_dir / f'tiptop_scene{scene}_ep{ep}.mp4'}")
+
 
     client.close()
     env.close()

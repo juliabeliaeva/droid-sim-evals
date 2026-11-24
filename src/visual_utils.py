@@ -11,9 +11,17 @@ def add_top_padding(image: np.ndarray, pad_px: int = 40) -> np.ndarray:
     return padded
 
 
-def overlay_timer_ms(image: np.ndarray, elapsed_ms: int) -> None:
-    text = f"t={elapsed_ms} ms"
-    org = (10, 28)
+def overlay_text(image: np.ndarray, text: str, org: tuple[int, int]):
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(image, text, org, font, 0.8, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(image, text, org, font, 0.8, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def overlay_timer_ms(image: np.ndarray, elapsed_ms: int) -> None:
+    text = f"t={elapsed_ms} ms"
+    org = (10, 28)
+    overlay_text(image, text, org)
+
+
+def overlay_prompt(image: np.ndarray, prompt: str) -> None:
+    overlay_text(image, prompt, (300, 28))
