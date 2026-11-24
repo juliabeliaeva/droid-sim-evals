@@ -77,7 +77,7 @@ def main(
     )
 
     env_cfg.set_scene(str(scene), variant)
-    env_cfg.episode_length_s = 90.0
+    env_cfg.episode_length_s = 180.0
     env = gym.make("DROID", cfg=env_cfg)
 
     obs, _ = env.reset()
