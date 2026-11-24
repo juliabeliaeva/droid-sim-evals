@@ -136,8 +136,13 @@ def main(
                         break
 
                 client.reset()
-                metadata["success"] = not plan_failed
-                if not plan_failed:
+                metadata["plan_success"] = not plan_failed
+                if plan_failed:
+                    image_file = video_dir / f"tiptop_scene_{scene}_p{i_idx}_ep{ep}_failure.png"
+                    frame = obs["policy"]["external_cam"][0].detach().cpu().numpy()
+                    mediapy.write_image(image_file, frame)
+                    metadata["image_file"] = str(image_file)
+                else:
                     video_file = video_dir / f"tiptop_scene_{scene}_p{i_idx}_ep{ep}.mp4"
                     mediapy.write_video(video_file, video, fps=video_fps)
                     metadata["video_file"] = str(video_file)
