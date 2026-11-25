@@ -11,13 +11,13 @@ Usage:
     # Then run this evaluation:
     uv run python tiptop_eval.py --scene 1 --ws-host localhost --ws-port 8765
 """
-import json
+from pathlib import Path
 
 import argparse
+import json
 import logging
-from datetime import datetime
 import numpy as np
-from pathlib import Path
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -35,13 +35,13 @@ from src.visual_utils import add_top_padding, overlay_timer_ms, overlay_prompt
 
 
 def main(
-    instructions: list[str],
-    episodes: int = 1,
-    headless: bool = True,
-    scene: int = 1,
-    variant: int = 0,
-    ws_host: str = "localhost",
-    ws_port: int = 8765,
+        instructions: list[str],
+        episodes: int = 1,
+        headless: bool = True,
+        scene: int = 1,
+        variants: int = 1,
+        ws_host: str = "localhost",
+        ws_port: int = 8765,
 ):
     """Run evaluation using tiptop websocket server.
 
@@ -51,7 +51,7 @@ def main(
             Set to False to open the Isaac Sim viewport for live visualization:
             ``uv run python tiptop_eval.py --headless False``
         scene: Scene number (1-5)
-        variant: Scene variant (0-9)
+        variants: Number of variants to run
         ws_host: Tiptop websocket server host
         ws_port: Tiptop websocket server port
         instructions: A list of natural language task instructions.
@@ -66,34 +66,51 @@ def main(
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
 
-    import src.sim_evals.environments  # noqa: F401
-    from isaaclab_tasks.utils import parse_env_cfg
-
-    env_cfg = parse_env_cfg(
-        "DROID",
-        device=args_cli.device,
-        num_envs=1,
-        use_fabric=True,
-    )
-
-    env_cfg.set_scene(str(scene), variant)
-    env_cfg.episode_length_s = 180.0
-    env = gym.make("DROID", cfg=env_cfg)
-
-    obs, _ = env.reset()
-    obs, _ = env.reset()  # Need second render cycle to get correctly loaded materials
+    from isaacsim.core.utils.stage import create_new_stage
 
     # Connect to tiptop websocket server
     logger.info(f"Connecting to tiptop server at ws://{ws_host}:{ws_port}...")
     client = TiptopWebsocketClient(host=ws_host, port=ws_port)
 
     video_dir = Path("runs") / datetime.now().strftime("%Y-%m-%d") / datetime.now().strftime("%H-%M-%S")
-    video_dir.mkdir(parents=True, exist_ok=True)
-    video = []
+
     summary = []
+
+    for variant in range(variants):
+        if variant > 0:
+            # env.close() releases the simulation context but leaves its USD stage open.
+            create_new_stage()
+        logger.info(f"Running scene {scene} variant {variant}")
+        result = run_scene(args_cli.device, client, scene, variant, instructions, episodes, headless, video_dir)
+        summary.extend(result)
+
+    (video_dir / f"summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+    client.close()
+    simulation_app.close()
+
+
+def run_scene(device: str, client: TiptopWebsocketClient, scene: int, variant: int, instructions: list[str],
+              episodes: int, headless: bool, video_dir: Path) -> list[dict]:
+    import src.sim_evals.environments  # noqa: F401
+    from isaaclab_tasks.utils import parse_env_cfg
+
+    env_cfg = parse_env_cfg("DROID", device=device, num_envs=1, use_fabric=True, )
+
+    env_cfg.set_scene(str(scene), variant)
+    env_cfg.episode_length_s = 180.0
+    env_cfg.seed = 42
+    env = gym.make("DROID", cfg=env_cfg)
+
+    obs, _ = env.reset()
+    obs, _ = env.reset()  # Need second render cycle to get correctly loaded materials
+
+    video_dir.mkdir(parents=True, exist_ok=True)
+
     max_steps = env.env.max_episode_length
     video_fps = 15
 
+    summary = []
     with torch.no_grad():
         for i_idx, instruction in enumerate(instructions):
             for ep in range(episodes):
@@ -101,13 +118,14 @@ def main(
                 frame_idx = 0
                 obs = settle_sim(env, obs, reset_episode_buf=True)
                 plan_failed = False
-                metadata = dict(episode=ep, prompt=instruction)
-                for i in tqdm(range(max_steps), desc=f"Episode {ep+1}/{episodes}"):
+                metadata = dict(scene=scene, variant=variant, episode=ep, prompt=instruction)
+                video = []
+                for i in tqdm(range(max_steps), desc=f"Episode {ep + 1}/{episodes}"):
                     try:
                         ret = client.infer(obs, instruction)
                     except Exception as e:
                         metadata["error"] = str(e)
-                        logger.error(f"Planning failed for episode {ep+1}: {e}. Skipping.")
+                        logger.error(f"Planning failed for episode {ep + 1}: {e}. Skipping.")
                         plan_failed = True
                         break
 
@@ -137,26 +155,23 @@ def main(
 
                 client.reset()
                 metadata["plan_success"] = not plan_failed
+                episode_name = f"s{scene}_v{variant}_p{i_idx}_ep{ep}"
                 if plan_failed:
-                    image_file = video_dir / f"tiptop_scene_{scene}_p{i_idx}_ep{ep}_failure.png"
+                    image_file = video_dir / f"tiptop_scene_{episode_name}_failure.png"
                     frame = obs["policy"]["external_cam"][0].detach().cpu().numpy()
                     mediapy.write_image(image_file, frame)
                     metadata["image_file"] = str(image_file)
                 else:
-                    video_file = video_dir / f"tiptop_scene_{scene}_p{i_idx}_ep{ep}.mp4"
+                    video_file = video_dir / f"tiptop_scene_{episode_name}.mp4"
                     mediapy.write_video(video_file, video, fps=video_fps)
                     metadata["video_file"] = str(video_file)
                     logger.info(f"Saved video to {video_file}")
 
-                (video_dir / f"metadata_{scene}_p{i_idx}_ep{ep}.json").write_text(json.dumps(metadata, indent=2) + "\n")
+                (video_dir / f"metadata_{episode_name}.json").write_text(json.dumps(metadata, indent=2) + "\n")
                 summary.append(metadata)
-                video = []
-
-    (video_dir / f"summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-
-    client.close()
     env.close()
-    simulation_app.close()
+
+    return summary
 
 
 if __name__ == "__main__":
